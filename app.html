@@ -3,6 +3,8 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="listenr-ga4-id" content="G-49097C279G">
+<script src="./analytics.js"></script>
 <script src="./support.js"></script>
 </head>
 <body>
@@ -689,6 +691,59 @@ class Component extends DCLogic {
   pb = { fileId: null, blocks: [], sents: [], words: [], cur: 0, startChar: 0, lastChar: 0, playing: false, status: 'idle' };
   u = null; keepAlive = null; estTimer = null; rateTimer = null; saveTimer = null; toastTimer = null; dragDepth = 0;
   navHist = [{ sel: 'all' }]; navPos = 0; _nav = false;
+  _analyticsView = '';
+  _libraryLoaded = false;
+
+  analyticsView() {
+    if (this.pb.fileId) return { key: 'reader', title: 'Listenr - Reader' };
+    const sel = this.state.sel;
+    if (sel && sel.folder) return { key: 'folder', title: 'Listenr - Folder' };
+    if (sel && sel.tag) return { key: 'tag', title: 'Listenr - Tag' };
+    const views = {
+      all: ['all-files', 'Listenr - All Files'],
+      recent: ['recents', 'Listenr - Recents'],
+      fav: ['favorites', 'Listenr - Favorites'],
+      trash: ['recycle-bin', 'Listenr - Recycle Bin']
+    };
+    const view = views[sel] || views.all;
+    return { key: view[0], title: view[1] };
+  }
+
+  trackAnalyticsView() {
+    const view = this.analyticsView();
+    if (view.key === this._analyticsView) return;
+    this._analyticsView = view.key;
+    if (window.listenrAnalytics) window.listenrAnalytics.trackPage(view.key, view.title);
+  }
+
+  audienceSegment(files, folders) {
+    const folderNames = (folders || []).filter(f => !f.deleted).map(f => this.norm(f.name).toLowerCase());
+    const documentNames = (files || []).filter(f => !f.deleted).map(f => this.norm(f.name).toLowerCase());
+    const text = folderNames.concat(documentNames).join(' ');
+    const student = /\b(student|school|college|university|class|course|assignment|exam|lecture|homework|semester|subject|study|thesis)\b/.test(text);
+    const office = /\b(work|office|client|project|meeting|report|invoice|finance|sales|marketing|hr|business|company|team)\b/.test(text);
+    if (student && office) return 'mixed';
+    if (student) return 'student';
+    if (office) return 'office';
+    return 'other';
+  }
+
+  trackLibraryMetadata(files, folders) {
+    if (!window.listenrAnalytics || !window.listenrAnalytics.enabled) return;
+    if (!this._libraryLoaded) return;
+    if (sessionStorage.getItem('lr-ga-library-profile') === '1') return;
+    sessionStorage.setItem('lr-ga-library-profile', '1');
+    const liveFolders = (folders || []).filter(f => !f.deleted);
+    const liveFiles = (files || []).filter(f => !f.deleted);
+    const used = [...new Set(liveFiles.flatMap(f => f.tags || []))];
+    const profile = {
+      folder_count: liveFolders.length,
+      document_count: liveFiles.length,
+      used_tag_count: used.length,
+      audience_segment: this.audienceSegment(liveFiles, liveFolders)
+    };
+    window.listenrAnalytics.trackEvent('library_profile', profile);
+  }
 
   // ============ navigation history ============
   navRecord(entry) {
@@ -808,6 +863,10 @@ class Component extends DCLogic {
     window.addEventListener('keydown', this._onKey);
     this._onUnload = () => this.saveProgress(true);
     window.addEventListener('beforeunload', this._onUnload);
+    this.trackAnalyticsView();
+  }
+  componentDidUpdate() {
+    this.trackAnalyticsView();
   }
   componentWillUnmount() {
     window.removeEventListener('keydown', this._onKey);
@@ -844,6 +903,8 @@ class Component extends DCLogic {
     files.sort((a, b) => b.addedAt - a.addedAt);
     folders.sort((a, b) => a.name.localeCompare(b.name));
     this.setState({ files, folders });
+    this._libraryLoaded = true;
+    this.trackLibraryMetadata(files, folders);
   }
   updateFile(id, patch) {
     const files = this.state.files.map(f => f.id === id ? Object.assign({}, f, patch) : f);
