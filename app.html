@@ -474,6 +474,9 @@
               <select value="{{ voiceURI }}" onChange="{{ onVoice }}" style="width:100%; font-size:12.5px; font-family:inherit; padding:6px 8px; border-radius:8px; border:1px solid var(--bd3); background:var(--bg); outline:none; color:var(--tx1);">
                 <sc-for list="{{ voices }}" as="v" hint-placeholder-count="0"><option value="{{ v.uri }}">{{ v.name }}</option></sc-for>
               </select>
+              <sc-if value="{{ showVoiceHint }}" hint-placeholder-val="{{ false }}">
+                <div style="font-size:11px; font-weight:500; color:var(--tx3); margin-top:6px; line-height:1.45;">{{ voiceHintText }}</div>
+              </sc-if>
             </div>
             <div style="display:flex; align-items:center; justify-content:space-between;">
               <div style="max-width:190px;">
@@ -681,7 +684,7 @@ class Component extends DCLogic {
     files: [], folders: [], sel: 'all', view: 'list', q: '', readerMode: 'text',
     menu: null, renaming: null, renameVal: '', winDrag: false,
     gearOpen: false, searchOpen: false, sq: '', matches: [], mi: 0,
-    toast: '', voices: [], voiceURI: '', autoScroll: true, rate: 2, tick: 0,
+    toast: '', voices: [], voiceURI: '', hasNatural: true, autoScroll: true, rate: 2, tick: 0,
     dark: false, skipHeader: true, skipFooter: true, skipUrls: true, skipCites: true, skipCurly: false, skipSquare: false, skipParen: false, skipTerms: [], skipInput: '',
     picked: {}, showTotal: false, aiImages: true
   };
@@ -831,10 +834,34 @@ class Component extends DCLogic {
     const loadVoices = () => {
       const vs = (speechSynthesis.getVoices() || []).filter(v => (v.lang || '').toLowerCase().startsWith('en'));
       if (!vs.length) return;
-      const patch = { voices: vs.map(v => ({ name: v.name.replace(/\s*\(.*\)$/, ''), uri: v.voiceURI })) };
+      // Rank voices by how natural they sound. Every modern platform ships free
+      // neural / "premium" voices that sound far better than the legacy default
+      // (Samantha on macOS, David/Zira on Windows) — surface those first so the
+      // reader defaults to a natural voice instead of a robotic one.
+      const rank = (v) => {
+        const n = (v.name || '').toLowerCase();
+        if (/premium|neural|natural/.test(n)) return 5;
+        if (/enhanced|siri/.test(n)) return 4;
+        if (/\bgoogle\b/.test(n)) return 3;   // Chrome's online voices are decent
+        if (/online/.test(n)) return 3;       // Microsoft online (non-natural)
+        return v.localService ? 1 : 2;
+      };
+      const tag = (s) => s >= 5 ? 'Natural' : s === 4 ? 'Enhanced' : s === 3 ? 'Online' : '';
+      const sorted = vs.map(v => ({ v, s: rank(v) }))
+        .sort((a, b) => b.s - a.s || a.v.name.localeCompare(b.v.name));
+      const patch = {
+        voices: sorted.map(({ v, s }) => {
+          const base = v.name.replace(/\s*\(.*\)$/, '');
+          const t = tag(s);
+          return { name: t ? base + ' · ' + t : base, uri: v.voiceURI };
+        }),
+        hasNatural: sorted.some(x => x.s >= 4),
+      };
       if (!this.state.voiceURI) {
-        const sam = vs.find(v => v.name === 'Samantha') || vs.find(v => v.default) || vs[0];
-        patch.voiceURI = sam.voiceURI;
+        // Prefer a remembered choice, otherwise the most natural voice available.
+        const saved = localStorage.getItem('lr-mac-voice');
+        const savedOk = saved && sorted.some(x => x.v.voiceURI === saved);
+        patch.voiceURI = savedOk ? saved : sorted[0].v.voiceURI;
       }
       this.setState(patch);
     };
@@ -2444,9 +2471,18 @@ class Component extends DCLogic {
       aiImagesBg: S.aiImages ? '#13b0b8' : 'var(--track)',
       aiImagesKnob: S.aiImages ? '17px' : '2px',
       toggleAiImages: () => { const v = !S.aiImages; this.setState({ aiImages: v }); localStorage.setItem('lr-mac-aiimg', v ? '1' : '0'); if (v && doc && doc.blocks.some(b => b.t === 'img')) this.describeImages(doc); },
-      voices: S.voices, voiceURI: S.voiceURI,
+      voices: S.voices, voiceURI: S.voiceURI, showVoiceHint: !S.hasNatural,
+      voiceHintText: (() => {
+        const ua = navigator.userAgent || '';
+        if (/Mac OS X|Macintosh|iPhone|iPad/.test(ua))
+          return 'Want more natural voices? Open System Settings → Accessibility → Spoken Content → System Voice → Manage Voices, and download an “Enhanced” or “Premium” English voice — it’ll appear here for free.';
+        if (/Windows/.test(ua))
+          return 'Want more natural voices? Open Settings → Time & language → Speech and add a natural voice, or open this app in Microsoft Edge to use its free “Natural” online voices.';
+        return 'Want more natural voices? Try opening this app in Microsoft Edge, which offers free “Natural” online voices, or install additional system voices for your OS.';
+      })(),
       onVoice: (e) => {
         this.setState({ voiceURI: e.target.value });
+        try { localStorage.setItem('lr-mac-voice', e.target.value); } catch (er) {}
         if (pb.playing) { pb.startChar = (pb.startChar || 0) + pb.lastChar; pb.lastChar = 0; setTimeout(() => this.speak(), 50); }
       },
 
